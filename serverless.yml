@@ -1,0 +1,95 @@
+service: mrkapu-matching-service
+
+frameworkVersion: '3'
+useDotenv: true
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  architecture: arm64
+  region: ${opt:region, 'ap-southeast-1'}
+  stage: ${opt:stage, 'dev'}
+  profile: owlester
+  memorySize: 512
+  timeout: 30
+
+  environment:
+    NODE_ENV: production
+    MONGODB_URI: ${env:MONGODB_URI}
+    JWT_SECRET: ${env:JWT_SECRET}
+    AWS_S3_BUCKET: ${env:AWS_S3_BUCKET, 'kapu-general'}
+    AWS_S3_PUBLIC_URL: ${env:AWS_S3_PUBLIC_URL, ''}
+    EVENT_BUS_NAME: ${env:EVENT_BUS_NAME, 'default'}
+
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - events:PutEvents
+          Resource: '*'
+
+  httpApi:
+    cors:
+      allowedOrigins:
+        - '*'
+      allowedHeaders:
+        - Content-Type
+        - Authorization
+      allowedMethods:
+        - GET
+        - POST
+        - PUT
+        - PATCH
+        - DELETE
+        - OPTIONS
+
+package:
+  patterns:
+    - '!src/**'
+    - '!test/**'
+    - '!.env*'
+    - '!*.md'
+    - '!tsconfig*.json'
+    - '!nest-cli.json'
+    - '!.eslintrc*'
+    - '!.prettierrc'
+    - '!coverage/**'
+    - '!.git/**'
+    - '!node_modules/@nestjs/cli/**'
+    - '!node_modules/@nestjs/schematics/**'
+    - '!node_modules/@nestjs/testing/**'
+    - '!node_modules/typescript/**'
+    - '!node_modules/ts-node/**'
+    - '!node_modules/ts-jest/**'
+    - '!node_modules/jest/**'
+    - '!node_modules/jest-*/**'
+    - '!node_modules/@jest/**'
+    - '!node_modules/eslint/**'
+    - '!node_modules/eslint-*/**'
+    - '!node_modules/@typescript-eslint/**'
+    - '!node_modules/prettier/**'
+    - '!node_modules/serverless/**'
+    - '!node_modules/serverless-*/**'
+    - '!node_modules/@types/**'
+    - '!node_modules/**/*.d.ts'
+    - '!node_modules/**/*.map'
+    - '!node_modules/**/LICENSE*'
+    - '!node_modules/**/CHANGELOG*'
+    - '!node_modules/**/README*'
+    - '!node_modules/**/*.md'
+    - '!node_modules/**/test/**'
+    - '!node_modules/**/tests/**'
+    - '!node_modules/**/__tests__/**'
+
+functions:
+  api:
+    handler: dist/lambda.handler
+    description: MrKapu Matching Service — match scoring and preferences
+    events:
+      - httpApi:
+          path: /
+          method: ANY
+      - httpApi:
+          path: /{proxy+}
+          method: ANY
