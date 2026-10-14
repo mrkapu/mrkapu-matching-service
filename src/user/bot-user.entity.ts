@@ -53,6 +53,44 @@ export class BotUser {
   @Prop()
   maritalStatus?: string;
 
+  // Bots don't set these for real — declared only so userToDiscoveryProfile's
+  // shared (User | BotUser) mapping type-checks; always undefined in practice.
+  @Prop()
+  height?: number;
+
+  @Prop()
+  weight?: number;
+
+  @Prop()
+  skinColor?: string;
+
+  @Prop()
+  hairType?: string;
+
+  @Prop()
+  bodyType?: string;
+
+  @Prop()
+  hasBeard?: boolean;
+
+  @Prop()
+  hairColor?: string;
+
+  @Prop()
+  district?: string;
+
+  @Prop()
+  siblingsCount?: number;
+
+  @Prop()
+  netWorth?: string;
+
+  @Prop()
+  vehicleType?: string;
+
+  @Prop()
+  numberOfVehicles?: number;
+
   @Prop()
   avatarUrl?: string;
 

@@ -13,9 +13,73 @@ export class MatchAgeRange {
 export const MatchAgeRangeSchema = SchemaFactory.createForClass(MatchAgeRange);
 
 @Schema({ _id: false })
+export class MatchHeightRange {
+  @Prop()
+  min?: number;
+
+  @Prop()
+  max?: number;
+}
+
+export const MatchHeightRangeSchema = SchemaFactory.createForClass(MatchHeightRange);
+
+@Schema({ _id: false })
+export class MatchWeightRange {
+  @Prop()
+  min?: number;
+
+  @Prop()
+  max?: number;
+}
+
+export const MatchWeightRangeSchema = SchemaFactory.createForClass(MatchWeightRange);
+
+@Schema({ _id: false })
 export class MatchPreferences {
   @Prop({ type: MatchAgeRangeSchema, default: {} })
   ageRange?: MatchAgeRange;
+
+  // Server-derived from the requesting user's own gender — never trust a
+  // client-supplied value here. See MatchingService.normalizePreferences().
+  @Prop()
+  preferredGender?: string;
+
+  @Prop({ type: MatchHeightRangeSchema, default: {} })
+  heightRange?: MatchHeightRange;
+
+  @Prop({ type: MatchWeightRangeSchema, default: {} })
+  weightRange?: MatchWeightRange;
+
+  @Prop({ type: [String], default: [] })
+  preferredBodyTypes?: string[];
+
+  @Prop({ type: [String], default: [] })
+  preferredSkinColors?: string[];
+
+  // Tri-state ('yes'/'no'/'no_preference'), not an array — a beard
+  // preference doesn't have multiple simultaneous values.
+  @Prop()
+  preferredHasBeard?: string;
+
+  @Prop({ type: [String], default: [] })
+  preferredHairTypes?: string[];
+
+  @Prop({ type: [String], default: [] })
+  preferredHairColors?: string[];
+
+  @Prop({ type: [String], default: [] })
+  preferredNetWorths?: string[];
+
+  // Tri-state ('yes'/'no'/'no_preference'), same shape as preferredHasBeard.
+  @Prop()
+  preferredVehicleOwnership?: string;
+
+  // "At most N siblings" — a cutoff, not a range.
+  @Prop()
+  preferredMaxSiblings?: number;
+
+  @Prop({ type: [String], default: [] })
+  preferredDistricts?: string[];
 
   @Prop({ type: [String], default: [] })
   preferredProvinces?: string[];
@@ -76,6 +140,11 @@ export class User {
   @Prop()
   age?: number;
 
+  // Needed to server-derive preferredGender — see
+  // MatchingService.normalizePreferences(). Never client-editable here.
+  @Prop()
+  gender?: string;
+
   @Prop()
   city?: string;
 
@@ -105,6 +174,47 @@ export class User {
 
   @Prop()
   maritalStatus?: string;
+
+  // Physical/lifestyle attributes — declared here so they survive Mongoose's
+  // default strict-schema read filtering. They already exist on the
+  // underlying auth_users document (written by mrkapu-user-service) but
+  // were never declared on this service's own shadow User class before, so
+  // every read here silently dropped them.
+  @Prop()
+  height?: number;
+
+  @Prop()
+  weight?: number;
+
+  @Prop()
+  skinColor?: string;
+
+  @Prop()
+  hairType?: string;
+
+  @Prop()
+  bodyType?: string;
+
+  @Prop()
+  hasBeard?: boolean;
+
+  @Prop()
+  hairColor?: string;
+
+  @Prop()
+  district?: string;
+
+  @Prop()
+  siblingsCount?: number;
+
+  @Prop()
+  netWorth?: string;
+
+  @Prop()
+  vehicleType?: string;
+
+  @Prop()
+  numberOfVehicles?: number;
 
   @Prop()
   avatarUrl?: string;
@@ -147,6 +257,11 @@ export class User {
 
   @Prop({ default: 0 })
   profileCompletion?: number;
+
+  // Set true by MatchingService.updatePreferences() on the first successful
+  // save — onboarding or a later edit. Used to avoid re-prompting at signup.
+  @Prop({ default: false })
+  partnerPreferencesCompleted?: boolean;
 
   @Prop({ type: MongooseSchema.Types.Mixed, default: {} })
   matchPreferences?: MatchPreferences | Record<string, unknown>;

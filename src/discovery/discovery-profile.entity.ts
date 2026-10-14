@@ -51,6 +51,42 @@ export class DiscoveryProfile {
   @Prop()
   maritalStatus?: string;
 
+  @Prop()
+  height?: number;
+
+  @Prop()
+  weight?: number;
+
+  @Prop()
+  skinColor?: string;
+
+  @Prop()
+  hairType?: string;
+
+  @Prop()
+  bodyType?: string;
+
+  @Prop()
+  hasBeard?: boolean;
+
+  @Prop()
+  hairColor?: string;
+
+  @Prop()
+  district?: string;
+
+  @Prop()
+  siblingsCount?: number;
+
+  @Prop()
+  netWorth?: string;
+
+  @Prop()
+  vehicleType?: string;
+
+  @Prop()
+  numberOfVehicles?: number;
+
   @Prop({ type: [String], default: [] })
   interests?: string[];
 

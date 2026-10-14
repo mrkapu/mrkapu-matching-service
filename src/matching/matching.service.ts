@@ -22,6 +22,24 @@ type MatchPreferencesPayload = {
     min?: number;
     max?: number;
   };
+  preferredGender?: string;
+  heightRange?: {
+    min?: number;
+    max?: number;
+  };
+  weightRange?: {
+    min?: number;
+    max?: number;
+  };
+  preferredBodyTypes?: string[];
+  preferredSkinColors?: string[];
+  preferredHasBeard?: string;
+  preferredHairTypes?: string[];
+  preferredHairColors?: string[];
+  preferredNetWorths?: string[];
+  preferredVehicleOwnership?: string;
+  preferredMaxSiblings?: number;
+  preferredDistricts?: string[];
   preferredProvinces?: string[];
   preferredCities?: string[];
   preferredReligions?: string[];
@@ -87,7 +105,16 @@ export class MatchingService {
   }
 
   async updatePreferences(userId: string, dto: UpdateMatchPreferencesDto) {
-    const normalized = this.normalizePreferences(dto);
+    const caller = await this.userModel
+      .findById(userId)
+      .select('_id gender')
+      .lean()
+      .exec();
+    if (!caller) {
+      throw new NotFoundException('User not found');
+    }
+
+    const normalized = this.normalizePreferences(dto, caller.gender);
     const updated = await this.userModel
       .findByIdAndUpdate(
         userId,
@@ -96,6 +123,7 @@ export class MatchingService {
             ...normalized,
             updatedAt: new Date(),
           },
+          partnerPreferencesCompleted: true,
         },
         { new: true },
       )
@@ -217,16 +245,15 @@ export class MatchingService {
     };
   }
 
+  // Always builds from the live User document, matching how candidates are
+  // handled in getMatches() — the cached discovery_profiles doc is not used
+  // here. That cache is only ever upserted by updatePreferences() with just
+  // {matchPreferences, sourceUpdatedAt}, so preferring it for the viewer
+  // meant every other field (including matchPreferences' own fallback
+  // comparisons against the viewer's real profile) was missing or frozen
+  // stale for any user who had ever saved preferences — exactly the users
+  // this feature most needs to work correctly for.
   private async loadViewerProfile(userId: string): Promise<DiscoveryProfile | null> {
-    const discoveryProfile = await this.discoveryProfileModel
-      .findOne({ userId })
-      .lean()
-      .exec();
-
-    if (discoveryProfile) {
-      return discoveryProfile;
-    }
-
     const user = await this.userModel.findById(userId).lean().exec();
     if (!user) {
       return null;
@@ -401,6 +428,78 @@ export class MatchingService {
       viewer.favoritePlaces || [],
     );
     components.push({ weight: 4, score: lifestyleScore });
+
+    const heightScore = this.computeRangeScore(
+      candidate.height,
+      preferences.heightRange?.min,
+      preferences.heightRange?.max,
+      viewer.height,
+    );
+    components.push({ weight: 7, score: heightScore });
+
+    const weightScore = this.computeRangeScore(
+      candidate.weight,
+      preferences.weightRange?.min,
+      preferences.weightRange?.max,
+      viewer.weight,
+    );
+    components.push({ weight: 7, score: weightScore });
+
+    const bodyTypeScore = this.computePreferenceListScore(
+      candidate.bodyType,
+      preferences.preferredBodyTypes,
+      viewer.bodyType,
+    );
+    components.push({ weight: 4, score: bodyTypeScore });
+
+    const skinColorScore = this.computePreferenceListScore(
+      candidate.skinColor,
+      preferences.preferredSkinColors,
+      viewer.skinColor,
+    );
+    components.push({ weight: 4, score: skinColorScore });
+
+    const hairTypeScore = this.computePreferenceListScore(
+      candidate.hairType,
+      preferences.preferredHairTypes,
+      viewer.hairType,
+    );
+    components.push({ weight: 4, score: hairTypeScore });
+
+    const hairColorScore = this.computePreferenceListScore(
+      candidate.hairColor,
+      preferences.preferredHairColors,
+      viewer.hairColor,
+    );
+    components.push({ weight: 4, score: hairColorScore });
+
+    const netWorthScore = this.computePreferenceListScore(
+      candidate.netWorth,
+      preferences.preferredNetWorths,
+      viewer.netWorth,
+    );
+    components.push({ weight: 7, score: netWorthScore });
+
+    const beardScore = this.computeTriStateScore(
+      candidate.hasBeard,
+      preferences.preferredHasBeard,
+    );
+    components.push({ weight: 2, score: beardScore });
+
+    const vehicleScore = this.computeTriStateScore(
+      candidate.numberOfVehicles != null ? candidate.numberOfVehicles > 0 : undefined,
+      preferences.preferredVehicleOwnership,
+    );
+    components.push({ weight: 5, score: vehicleScore });
+    if (vehicleScore === 1 && preferences.preferredVehicleOwnership === 'yes') {
+      reasons.push('Owns a vehicle');
+    }
+
+    const siblingsScore = this.computeMaxCountScore(
+      candidate.siblingsCount,
+      preferences.preferredMaxSiblings,
+    );
+    components.push({ weight: 3, score: siblingsScore });
 
     return this.weightedAverage(components);
   }
@@ -622,6 +721,18 @@ export class MatchingService {
       job: user.job,
       monthlyIncomeRange: user.monthlyIncomeRange,
       maritalStatus: user.maritalStatus,
+      height: user.height,
+      weight: user.weight,
+      skinColor: user.skinColor,
+      hairType: user.hairType,
+      bodyType: user.bodyType,
+      hasBeard: user.hasBeard,
+      hairColor: user.hairColor,
+      district: user.district,
+      siblingsCount: user.siblingsCount,
+      netWorth: user.netWorth,
+      vehicleType: user.vehicleType,
+      numberOfVehicles: user.numberOfVehicles,
       interests: user.interests || [],
       hobbies: user.hobbies || [],
       sports: user.sports || [],
@@ -648,6 +759,20 @@ export class MatchingService {
     return {
       minAge: preferences?.ageRange?.min ?? null,
       maxAge: preferences?.ageRange?.max ?? null,
+      preferredGender: preferences?.preferredGender ?? null,
+      preferredHeightMin: preferences?.heightRange?.min ?? null,
+      preferredHeightMax: preferences?.heightRange?.max ?? null,
+      preferredWeightMin: preferences?.weightRange?.min ?? null,
+      preferredWeightMax: preferences?.weightRange?.max ?? null,
+      preferredBodyTypes: preferences?.preferredBodyTypes || [],
+      preferredSkinColors: preferences?.preferredSkinColors || [],
+      preferredHasBeard: preferences?.preferredHasBeard ?? null,
+      preferredHairTypes: preferences?.preferredHairTypes || [],
+      preferredHairColors: preferences?.preferredHairColors || [],
+      preferredNetWorths: preferences?.preferredNetWorths || [],
+      preferredVehicleOwnership: preferences?.preferredVehicleOwnership ?? null,
+      preferredMaxSiblings: preferences?.preferredMaxSiblings ?? null,
+      preferredDistricts: preferences?.preferredDistricts || [],
       preferredProvinces: preferences?.preferredProvinces || [],
       preferredCities: preferences?.preferredCities || [],
       preferredReligions: preferences?.preferredReligions || [],
@@ -663,9 +788,21 @@ export class MatchingService {
     };
   }
 
-  private normalizePreferences(dto: UpdateMatchPreferencesDto) {
+  // callerGender: the requesting user's own gender, loaded by
+  // updatePreferences() — preferredGender is ALWAYS derived from this, never
+  // taken from the DTO, regardless of what the client sends.
+  private normalizePreferences(
+    dto: UpdateMatchPreferencesDto,
+    callerGender?: string,
+  ) {
     const minAge = this.safeNumber(dto.minAge);
     const maxAge = this.safeNumber(dto.maxAge);
+    const heightMin = this.safeNumber(dto.preferredHeightMin);
+    const heightMax = this.safeNumber(dto.preferredHeightMax);
+    const weightMin = this.safeNumber(dto.preferredWeightMin);
+    const weightMax = this.safeNumber(dto.preferredWeightMax);
+    const preferredGender =
+      callerGender === 'male' ? 'female' : callerGender === 'female' ? 'male' : undefined;
 
     return {
       ageRange:
@@ -675,6 +812,24 @@ export class MatchingService {
               max: maxAge ?? undefined,
             }
           : {},
+      preferredGender,
+      heightRange:
+        heightMin != null || heightMax != null
+          ? { min: heightMin ?? undefined, max: heightMax ?? undefined }
+          : {},
+      weightRange:
+        weightMin != null || weightMax != null
+          ? { min: weightMin ?? undefined, max: weightMax ?? undefined }
+          : {},
+      preferredBodyTypes: this.normalizeTextList(dto.preferredBodyTypes),
+      preferredSkinColors: this.normalizeTextList(dto.preferredSkinColors),
+      preferredHasBeard: dto.preferredHasBeard,
+      preferredHairTypes: this.normalizeTextList(dto.preferredHairTypes),
+      preferredHairColors: this.normalizeTextList(dto.preferredHairColors),
+      preferredNetWorths: this.normalizeTextList(dto.preferredNetWorths),
+      preferredVehicleOwnership: dto.preferredVehicleOwnership,
+      preferredMaxSiblings: this.safeNumber(dto.preferredMaxSiblings),
+      preferredDistricts: this.normalizeTextList(dto.preferredDistricts),
       preferredProvinces: this.normalizeTextList(dto.preferredProvinces),
       preferredCities: this.normalizeTextList(dto.preferredCities),
       preferredReligions: this.normalizeTextList(dto.preferredReligions),
@@ -731,9 +886,17 @@ export class MatchingService {
     preferences: MatchPreferencesPayload,
   ) {
     const candidateCity = this.normalizeToken(candidate.city);
+    const candidateDistrict = this.normalizeToken(candidate.district);
     const candidateProvince = this.normalizeToken(candidate.province);
     const preferredCities = new Set(
       this.normalizeTextList(preferences.preferredCities).map((value) =>
+        this.normalizeToken(value),
+      ),
+    );
+    // Sri Lanka's geography is province > district > city — district sits
+    // between the existing city (finest) and province (coarsest) tiers.
+    const preferredDistricts = new Set(
+      this.normalizeTextList(preferences.preferredDistricts).map((value) =>
         this.normalizeToken(value),
       ),
     );
@@ -743,8 +906,11 @@ export class MatchingService {
       ),
     );
 
-    if (preferredCities.size || preferredProvinces.size) {
+    if (preferredCities.size || preferredDistricts.size || preferredProvinces.size) {
       if (candidateCity && preferredCities.has(candidateCity)) return 1;
+      if (candidateDistrict && preferredDistricts.has(candidateDistrict)) {
+        return 0.9;
+      }
       if (candidateProvince && preferredProvinces.has(candidateProvince)) {
         return 0.82;
       }
@@ -752,8 +918,16 @@ export class MatchingService {
     }
 
     const viewerCity = this.normalizeToken(viewer.city);
+    const viewerDistrict = this.normalizeToken(viewer.district);
     const viewerProvince = this.normalizeToken(viewer.province);
     if (viewerCity && candidateCity && viewerCity === candidateCity) return 1;
+    if (
+      viewerDistrict &&
+      candidateDistrict &&
+      viewerDistrict === candidateDistrict
+    ) {
+      return 0.85;
+    }
     if (
       viewerProvince &&
       candidateProvince &&
@@ -852,6 +1026,56 @@ export class MatchingService {
   private sharedValues(left: string[], right: string[]) {
     const rightSet = new Set(this.normalizeTextList(right));
     return this.normalizeTextList(left).filter((value) => rightSet.has(value));
+  }
+
+  // Mirrors computeAgeScore's shape: hard boundary check when an explicit
+  // min/max is set (0 if outside it, 1 if inside — no partial credit, since
+  // an explicit range is a stated requirement), else graduated similarity
+  // to the viewer's own value as a "people like me" fallback.
+  private computeRangeScore(
+    candidateValue?: number | null,
+    min?: number | null,
+    max?: number | null,
+    fallbackViewerValue?: number | null,
+  ) {
+    if (candidateValue == null) return null;
+
+    if (min != null || max != null) {
+      if (min != null && candidateValue < min) return 0;
+      if (max != null && candidateValue > max) return 0;
+      return 1;
+    }
+
+    if (fallbackViewerValue == null) return null;
+    const diff = Math.abs(fallbackViewerValue - candidateValue);
+    if (diff <= 2) return 1;
+    if (diff <= 5) return 0.75;
+    if (diff <= 10) return 0.5;
+    return 0.25;
+  }
+
+  // For 'yes'/'no'/'no_preference' preferences against a boolean candidate
+  // fact (has a beard, owns a vehicle). 'no_preference' or an unset
+  // preference means no signal either way — never penalizes.
+  private computeTriStateScore(
+    candidateValue?: boolean,
+    preference?: string | null,
+  ) {
+    if (!preference || preference === 'no_preference') return null;
+    if (candidateValue == null) return null;
+    const wantsYes = preference === 'yes';
+    return candidateValue === wantsYes ? 1 : 0;
+  }
+
+  // "At most N" cutoff (siblings) rather than a range — no explicit max set
+  // means no signal, not an automatic pass/fail.
+  private computeMaxCountScore(
+    candidateValue?: number | null,
+    maxAllowed?: number | null,
+  ) {
+    if (maxAllowed == null) return null;
+    if (candidateValue == null) return null;
+    return candidateValue <= maxAllowed ? 1 : 0;
   }
 
   private weightedAverage(components: WeightedComponent[]) {
