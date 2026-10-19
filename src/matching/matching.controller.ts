@@ -1,8 +1,10 @@
-import { Body, Controller, Get, Param, Patch, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Query, UseGuards } from '@nestjs/common';
+import { ActorAuthGuard } from './actor-auth.guard';
 import { UpdateMatchPreferencesDto } from './dto/update-match-preferences.dto';
 import { MatchingService } from './matching.service';
 
 @Controller('matching')
+@UseGuards(ActorAuthGuard)
 export class MatchingController {
   constructor(private readonly matchingService: MatchingService) {}
 

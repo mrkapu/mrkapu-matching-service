@@ -9,7 +9,7 @@ import {
   DiscoveryProfile,
   DiscoveryProfileDocument,
 } from '../discovery/discovery-profile.entity';
-import { BotUser, BotUserDocument } from '../user/bot-user.entity';
+import { BotUser } from '../user/bot-user.entity';
 import { User, UserDocument } from '../user/user.entity';
 import {
   WallViewEvent,
@@ -53,6 +53,31 @@ type MatchPreferencesPayload = {
   updatedAt?: Date;
 };
 
+// Preferences stored under the same name the screens send them as.
+const PASS_THROUGH_PREFERENCES = [
+  'preferredBodyTypes',
+  'preferredSkinColors',
+  'preferredHasBeard',
+  'preferredHairTypes',
+  'preferredHairColors',
+  'preferredNetWorths',
+  'preferredVehicleOwnership',
+  'preferredMaxSiblings',
+  'preferredDistricts',
+  'preferredProvinces',
+  'preferredCities',
+  'preferredReligions',
+  'preferredCastes',
+  'preferredEducationKeywords',
+  'preferredOccupationKeywords',
+  'preferredInterests',
+  'preferredHobbies',
+  'preferredMaritalStatuses',
+  'dealBreakers',
+] as const;
+
+const NO_PREFERENCE = new Set(['any', 'no preference', 'no_preference', 'doesn\'t matter']);
+
 type MatchCandidate = {
   user: ReturnType<MatchingService['toCandidatePublic']>;
   score: number;
@@ -80,8 +105,6 @@ export class MatchingService {
   constructor(
     @InjectModel(User.name)
     private readonly userModel: Model<UserDocument>,
-    @InjectModel(BotUser.name)
-    private readonly botUserModel: Model<BotUserDocument>,
     @InjectModel(DiscoveryProfile.name)
     private readonly discoveryProfileModel: Model<DiscoveryProfileDocument>,
     @InjectModel(DiscoveryPost.name)
@@ -104,10 +127,14 @@ export class MatchingService {
     return this.serializePreferences(user.matchPreferences);
   }
 
+  // Only the preferences a screen actually sent are changed, so the web
+  // panel, the app's preference sheet and the home nudge (each of which
+  // offers a different subset) no longer wipe each other's choices. Sending
+  // a field empty (null / []) clears it.
   async updatePreferences(userId: string, dto: UpdateMatchPreferencesDto) {
     const caller = await this.userModel
       .findById(userId)
-      .select('_id gender')
+      .select('_id gender matchPreferences')
       .lean()
       .exec();
     if (!caller) {
@@ -115,12 +142,22 @@ export class MatchingService {
     }
 
     const normalized = this.normalizePreferences(dto, caller.gender);
+    const merged: MatchPreferencesPayload = { ...this.coercePreferences(caller.matchPreferences) };
+    const sent = (...keys: (keyof UpdateMatchPreferencesDto)[]) => keys.some((key) => dto[key] !== undefined);
+    if (sent('minAge', 'maxAge')) merged.ageRange = normalized.ageRange;
+    if (sent('preferredHeightMin', 'preferredHeightMax')) merged.heightRange = normalized.heightRange;
+    if (sent('preferredWeightMin', 'preferredWeightMax')) merged.weightRange = normalized.weightRange;
+    for (const key of PASS_THROUGH_PREFERENCES) {
+      if (sent(key)) (merged as Record<string, unknown>)[key] = normalized[key];
+    }
+    merged.preferredGender = normalized.preferredGender;
+
     const updated = await this.userModel
       .findByIdAndUpdate(
         userId,
         {
           matchPreferences: {
-            ...normalized,
+            ...merged,
             updatedAt: new Date(),
           },
           partnerPreferencesCompleted: true,
@@ -153,41 +190,48 @@ export class MatchingService {
     const safeLimit = Math.min(Math.max(limit, 1), 100);
     const safeOffset = Math.max(offset, 0);
 
-    const viewer =
-      (await this.loadViewerProfile(userId)) || this.buildAnonymousViewer(userId);
+    const viewerUser = await this.userModel.findById(userId).lean().exec();
+    if (!viewerUser) {
+      throw new NotFoundException('User not found');
+    }
+    const viewer = this.userToDiscoveryProfile(viewerUser);
 
-    const [discoveryCandidates, authUsers, botUsers] = await Promise.all([
-      this.discoveryProfileModel
-        .find({ userId: { $ne: userId } })
-        .limit(800)
-        .lean()
-        .exec(),
-      this.userModel
-        .find({ _id: { $ne: userId } })
-        .limit(800)
-        .lean()
-        .exec(),
-      this.botUserModel
-        .find({ _id: { $ne: userId } })
-        .limit(800)
-        .lean()
-        .exec(),
-    ]);
-
-    const mergedCandidates = [
-      ...discoveryCandidates,
-      ...authUsers.map((user) => this.userToDiscoveryProfile(user)),
-      ...botUsers.map((user) => this.userToDiscoveryProfile(user)),
-    ];
-
-    const candidatesByUserId = new Map<string, DiscoveryProfile>();
-    for (const candidate of mergedCandidates) {
-      const id = this.userId(candidate);
-      if (!id || id === userId) continue;
-      candidatesByUserId.set(id, candidate);
+    // Matrimonial matches are the other gender. Without a gender on the
+    // account there's nothing sensible to show.
+    const lookingFor =
+      viewerUser.gender === 'male' ? 'female' : viewerUser.gender === 'female' ? 'male' : null;
+    if (!lookingFor) {
+      return {
+        total: 0,
+        offset: safeOffset,
+        limit: safeLimit,
+        preferences: this.serializePreferences(viewer.matchPreferences),
+        matches: [],
+        needsGender: true,
+      };
     }
 
-    const candidates = Array.from(candidatesByUserId.values());
+    // Real, reachable members only: never bots (the separate `users`
+    // collection, or isBot accounts), businesses, or accounts that are
+    // paused, hidden or suspended. Most recently active first.
+    const authUsers = await this.userModel
+      .find({
+        _id: { $ne: userId },
+        gender: lookingFor,
+        isBot: { $ne: true },
+        account_type: { $ne: 'service_account' },
+        role: { $nin: ['admin', 'vendor', 'bot'] },
+        accountPaused: { $ne: true },
+        profileVisible: { $ne: false },
+        accountStatus: { $ne: 'suspended' },
+      })
+      .setOptions({ strictQuery: false })
+      .sort({ updatedAt: -1 })
+      .limit(800)
+      .lean()
+      .exec();
+
+    const candidates = authUsers.map((user) => this.userToDiscoveryProfile(user));
 
     const candidateIds = candidates.map((candidate) => this.userId(candidate));
     const [behaviorProfile, candidateTopTags] = await Promise.all([
@@ -223,43 +267,6 @@ export class MatchingService {
       preferences: this.serializePreferences(viewer.matchPreferences),
       matches: matches.slice(safeOffset, safeOffset + safeLimit),
     };
-  }
-
-  private buildAnonymousViewer(userId: string): DiscoveryProfile {
-    return {
-      userId,
-      interests: [],
-      hobbies: [],
-      sports: [],
-      favoritePlaces: [],
-      serviceCategories: [],
-      followingIds: [],
-      followerIds: [],
-      followersCount: 0,
-      profileCompletion: 0,
-      verifiedPhoneNumber: false,
-      verifiedEmail: false,
-      isProfileVerified: false,
-      isBot: false,
-      matchPreferences: {},
-    };
-  }
-
-  // Always builds from the live User document, matching how candidates are
-  // handled in getMatches() — the cached discovery_profiles doc is not used
-  // here. That cache is only ever upserted by updatePreferences() with just
-  // {matchPreferences, sourceUpdatedAt}, so preferring it for the viewer
-  // meant every other field (including matchPreferences' own fallback
-  // comparisons against the viewer's real profile) was missing or frozen
-  // stale for any user who had ever saved preferences — exactly the users
-  // this feature most needs to work correctly for.
-  private async loadViewerProfile(userId: string): Promise<DiscoveryProfile | null> {
-    const user = await this.userModel.findById(userId).lean().exec();
-    if (!user) {
-      return null;
-    }
-
-    return this.userToDiscoveryProfile(user);
   }
 
   private scoreCandidate(
@@ -686,7 +693,10 @@ export class MatchingService {
       education: candidate.education,
       occupation: candidate.occupation || candidate.job,
       religion: candidate.religion,
-      image: candidate.avatarUrl,
+      // Photos are only shown under the owner's photo-privacy rules, which
+      // the profile page applies — never in match results.
+      image: null,
+      hasPhoto: Boolean(candidate.avatarUrl),
       interests: (candidate.interests || []).slice(0, 6),
       profileCompletion: Number(candidate.profileCompletion || 0),
       verifiedPhoneNumber: candidate.verifiedPhoneNumber === true,
@@ -1122,12 +1132,13 @@ export class MatchingService {
     return age > 0 ? age : undefined;
   }
 
+  // "Any" / "No preference" in a list means no preference at all.
   private normalizeTextList(values?: string[]) {
     return Array.from(
       new Set(
         (values || [])
           .map((value) => this.normalizeSearchableText(value))
-          .filter((value): value is string => Boolean(value)),
+          .filter((value): value is string => Boolean(value) && !NO_PREFERENCE.has(value as string)),
       ),
     );
   }
